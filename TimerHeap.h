@@ -8,7 +8,6 @@
 #include "Condition.h"
 #include "common.h"
 //用最小堆和timerfd实现定时器
-//每个进程一个定时器，可以设为静态
 
 namespace netlib{
 
@@ -25,10 +24,10 @@ namespace netlib{
     class TimerHeap
     {
     public:
-        TimerHeap(EventBase* base);    //开启监听线程
+        TimerHeap(EventBase* base); 
         ~TimerHeap();
         int getTimerFd()    { return timerFD; }
-        TimerId addTimer(TimeStamp when,TimerCallback cb);
+        TimerId addTimer(TimeStamp when,TimerCallback cb,int64_t interval = 0);
         bool cancel(TimerId id);
 
     private:

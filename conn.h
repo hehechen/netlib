@@ -1,4 +1,8 @@
 #pragma once
+#include <unordered_set>
+#include <boost/circular_buffer.hpp>
+#include <boost/any.hpp>
+
 #include "event_base.h"
 #include "Ip4Addr.h"
 #include "Buffer.h"
@@ -11,19 +15,24 @@ namespace netlib {
         enum State { Invalid=1, Handshaking, Connected, Closed, Failed, };
         //Tcp构造函数，实际可用的连接应当通过createConnection创建
         TcpConn();
-        virtual ~TcpConn();
+        ~TcpConn();
         void attach(EventBase* base, int fd, Ip4Addr local, Ip4Addr peer);      //执行真正的初始化工作
         //可传入连接类型，返回智能指针
+        //作为client
         static TcpConnPtr createConnection(EventBase* base, const std::string& host, short port,
                                    int timeout=0, const std::string& localip="") {
             TcpConnPtr con(new TcpConn); con->connect(base, host, port, timeout, localip); return con;
         }
+        //作为server
         static TcpConnPtr createConnection(EventBase* base, int fd, Ip4Addr local, Ip4Addr peer) {
             TcpConnPtr con(new TcpConn); con->attach(base, fd, local, peer); return con;
         }
+          
+        void setContext(const boost::any& context_)
+        { context = context_; }
 
-        //automatically managed context. allocated when first used, deleted when destruct
-        template<class T> T& context() { return ctx_.context<T>(); }
+        const boost::any& getContext() const
+        { return context; }
 
         EventBase* getBase() { return base_; }
         State getState() { return state_; }
@@ -75,7 +84,7 @@ namespace netlib {
         TimerId timeoutId_ = -1;         //注册连接超时事件的id
         State state_;               
         TcpCallBack readcb_, writablecb_, statecb_; //各种回调事件
-        AutoContext ctx_;
+        boost::any context;          //可以存放任意类型的东西(尽量存指针)
         std::string destHost_, localIp_;
         int destPort_, connectTimeout_, reconnectInterval_;
         int64_t connectedTime_;
@@ -93,16 +102,19 @@ namespace netlib {
 //Tcp服务器
     class TcpServer: private noncopyable {
     public:
-        TcpServer(EventBases* bases);
+        TcpServer(EventBases* bases,int idleSeconds = 0);
         //return 0 on sucess, errno on error
         int bind(const std::string& host, short port, bool reusePort=false);
-        static TcpServerPtr startServer(EventBases* bases, const std::string& host, short port, bool reusePort=false);
+        //idleSeconds:允许空闲的秒数(>0有效)；reusePort：复用端口
+        static TcpServerPtr startServer(EventBases* bases, const std::string& host, 
+                                short port, int idleSeconds = 0,bool reusePort=false);
         ~TcpServer() { delete listen_channel_; }
         Ip4Addr getAddr() { return addr_; }
         EventBase* getBase() { return base_; }
-        void onConnCreate(const std::function<TcpConnPtr()>& cb) { createcb_ = cb; }
-        void onConnState(const TcpCallBack& cb) { statecb_ = cb; }
-        void onConnRead(const TcpCallBack& cb) { readcb_ = cb; assert(!msgcb_); }
+
+        void onConnCreate(const std::function<TcpConnPtr()>& cb);
+        void onConnState(const TcpCallBack& cb);
+        void onConnRead(const TcpCallBack& cb); 
         // 消息处理与Read回调冲突，只能调用一个
   //      void onConnMsg(CodecBase* codec, const MsgCallBack& cb) { codec_.reset(codec); msgcb_ = cb; assert(!readcb_); }
     private:
@@ -115,20 +127,35 @@ namespace netlib {
         std::function<TcpConnPtr()> createcb_;
    //     std::unique_ptr<CodecBase> codec_;
         void handleAccept();
+        //时间轮相关
+        void handleState();
+        void handleRead();
+        typedef std::weak_ptr<TcpConn> WeakTcpConnectionPtr;
+        struct Entry 
+          {
+            explicit Entry(const WeakTcpConnectionPtr& weakConn)
+              : weakConn_(weakConn)
+            {
+            }
+
+            ~Entry()
+            {
+              TcpConnPtr conn = weakConn_.lock();   //提升为shared_ptr
+              if (conn)
+              {
+                conn->close();
+              }
+            }
+
+            WeakTcpConnectionPtr weakConn_;
+          };
+        int idleSeconds;
+        int cur = 0;    //for debug
+        typedef std::shared_ptr<Entry> EntryPtr;
+        typedef std::weak_ptr<Entry> WeakEntryPtr;
+        typedef std::unordered_set<EntryPtr> Bucket;
+        typedef boost::circular_buffer<Bucket> WeakConnectionList;
+        //环形缓冲，每个桶是一个unordered_set，每次析构一个桶会将所有的引用计数-1
+        WeakConnectionList connectionBuckets_;      
     };
-
-    // typedef std::function<std::string (const TcpConnPtr&, const std::string& msg)> RetMsgCallBack;
-    // //半同步半异步服务器
-    // struct HSHA;
-    // typedef std::shared_ptr<HSHA> HSHAPtr;
-    // struct HSHA {
-    //     static HSHAPtr startServer(EventBase* base, const std::string& host, short port, int threads);
-    //     HSHA(int threads): threadPool_(threads) {}
-    //     void exit() {threadPool_.exit(); threadPool_.join(); }
-    //     void onMsg(CodecBase* codec, const RetMsgCallBack& cb);
-    //     TcpServerPtr server_;
-    //     ThreadPool threadPool_;
-    // };
-
-
 }

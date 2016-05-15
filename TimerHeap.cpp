@@ -80,13 +80,17 @@ namespace netlib{
 	}
 
 	//设置timerfd的超时时间
-	void resetTimerfd(int timerfd, TimeStamp expiration)
+	void resetTimerfd(int timerfd, TimeStamp expiration,int interval)
 	{
 	  struct itimerspec newValue;
 	  struct itimerspec oldValue;
 	  bzero(&newValue, sizeof newValue);
 	  bzero(&oldValue, sizeof oldValue);
+	  struct timespec ts;
+	  ts.tv_sec = interval;
+	  ts.tv_nsec = 0;
 	  newValue.it_value = howMuchTimeFromNow(expiration);
+	  newValue.it_interval = ts;
 	  int ret = ::timerfd_settime(timerfd, 0, &newValue, &oldValue);
 	  if (ret)
 	  {
@@ -94,6 +98,16 @@ namespace netlib{
 	  }
 	}
 
+	//timerFD是否被设为周期执行
+	//返回interval
+	int getInterval(int timerfd)
+	{
+		struct itimerspec oldValue;
+		int ret = ::timerfd_gettime(timerfd,&oldValue);
+		if(ret)
+			CHEN_LOG(ERROR,"get timerfd error");
+		return oldValue.it_interval.tv_sec;
+	}
 
 	TimerHeap::TimerHeap(EventBase* base):cond(mutex),
 							timerFD(createTimer()),timerChannel(base,timerFD,kReadEvent)
@@ -105,12 +119,12 @@ namespace netlib{
 		close(timerFD);
 	}
 
-	TimerId TimerHeap::addTimer(TimeStamp when,TimerCallback cb)
+	TimerId TimerHeap::addTimer(TimeStamp when,TimerCallback cb,int64_t interval)
 	{
 		MutexLockGuard mutexLock(mutex);		
 		timers.push_back(Entry(when,cb));
 		int index = push_heap(timers.begin(),timers.end(),EntryComp());
-		resetTimerfd(timerFD,timers.begin()->first);
+		resetTimerfd(timerFD,timers.begin()->first,interval);
 		//保存此定时器在timers中的位置并设置timerID
 		TimerId ids_size = timerIDs.size();
 		for(TimerId i=0;i<ids_size;i++)
@@ -156,12 +170,24 @@ namespace netlib{
 	{
 		TimeStamp now = timers.begin()->first;
 		while (!timers.empty() && timers.begin()->first == now)
-		{//处理同时任务
+		{//处理同时任务，这里有潜在的bug，当这个循环的时间超过1s，会导致定时不准
 			timers.begin()->second();
-			pop_heap(timers.begin(), timers.end(), EntryComp());
-			timers.pop_back();
+			int interval = getInterval(timerFD);
+			if(!interval)
+			{
+				pop_heap(timers.begin(), timers.end(), EntryComp());
+				timers.pop_back();
+			}
+			else
+			{//如果是周期执行的，更新TimeStamp并调整堆
+				TimeStamp newStamp(now.getMicrosecondsSinceEpoch()+
+									interval*TimeStamp::kMicroSecondsPerSecond);
+				timers.begin()->first = newStamp;
+				adjust_heap(timers.begin(),timers.end(),0,timers.size(),EntryComp());
+			}
 		}
+		int interval = getInterval(timerFD);
 		if(!timers.empty())
-			resetTimerfd(timerFD,timers.begin()->first);
+			resetTimerfd(timerFD,timers.begin()->first,interval);
 	}
 }

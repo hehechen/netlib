@@ -5,8 +5,6 @@
 #include "sysutil.h"
 namespace netlib {
 
-
-
 class EventBases: private noncopyable {
 public:
     virtual EventBase* allocBase() = 0;
@@ -24,12 +22,12 @@ public:
     void loop() ;
     //取消定时任务，若timer已经过期，则忽略
     bool cancel(TimerId timerid);
-    //添加定时任务，interval=0表示一次性任务，否则为重复任务，时间为毫秒
+    //添加定时任务，interval=0表示一次性任务，否则为重复任务，时间为毫秒，interval单位为秒
     TimerId runAt(int64_t microSecond, const Task& task, int64_t interval=0) { return runAt(microSecond, Task(task), interval); }
     TimerId runAt(int64_t microSecond, Task&& task, int64_t interval=0);
     TimerId runAfter(int64_t microSecond, const Task& task, int64_t interval=0) { return runAt(sysutil::timeMirco()+microSecond, Task(task), interval); }
     TimerId runAfter(int64_t microSecond, Task&& task, int64_t interval=0) { return runAt(sysutil::timeMirco()+microSecond, std::move(task), interval);}
-
+    
     //下列函数为线程安全的
 
     //退出事件循环

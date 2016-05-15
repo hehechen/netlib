@@ -103,18 +103,5 @@ namespace netlib{
     typedef std::shared_ptr<TcpServer> TcpServerPtr;
     typedef std::function<void(const TcpConnPtr&)> TcpCallBack;
     typedef std::function<void(const TcpConnPtr&, Slice msg)> MsgCallBack;
-    struct AutoContext: noncopyable {
-        void* ctx;
-        Task ctxDel;
-        AutoContext():ctx(0) {}
-        template<class T> T& context() {
-            if (ctx == NULL) {
-                ctx = new T();
-                ctxDel = [this] { delete (T*)ctx; };
-            }
-            return *(T*)ctx;
-        }
-        ~AutoContext() { if (ctx) ctxDel(); }
-    };
 }
 

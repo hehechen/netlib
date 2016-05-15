@@ -126,7 +126,7 @@ EventsImp::~EventsImp() {
 }
 
 TimerId EventsImp::runAt(int64_t microSecond, Task&& task, int64_t interval) {
-    return timerHeap->addTimer(TimeStamp(microSecond),task);
+    return timerHeap->addTimer(TimeStamp(microSecond),task,interval);
 }
 
 bool EventsImp::cancel(TimerId timerid) {
@@ -197,7 +197,7 @@ void Channel::close() {
         poller_->removeChannel(this);
         ::close(fd_);
         fd_ = -1;
-        handleRead();
+        handleRead();       //清理连接资源
     }
 }
 

@@ -7,8 +7,6 @@
 
 using namespace std;
 namespace netlib {
-int a;
-
 //执行初始化工作
 void TcpConn::attach(EventBase* base, int fd, Ip4Addr local, Ip4Addr peer)
 {
@@ -86,6 +84,7 @@ void TcpConn::close() {
 //清理连接资源                             
 void TcpConn::cleanup(const TcpConnPtr& con) {
     if (readcb_ && input_.size()) {
+        CHEN_LOG(INFO,"cleanup  ---  read");
         readcb_(con);
     }
     if (state_ == State::Handshaking) {
@@ -122,17 +121,20 @@ void TcpConn::handleRead(const TcpConnPtr& con) {
         int rd = 0;
         if (channel_->fd() >= 0) {
             rd = readImp(channel_->fd(), input_.end(), input_.space());
-            CHEN_LOG(DEBUG,"channel %lld fd %d readed %d bytes", (long long)channel_->id(), channel_->fd(), rd);
+            CHEN_LOG(DEBUG,"channel %lld fd %d readed %d bytes", (long long)channel_->id(), 
+                            channel_->fd(), rd);
         }
         if (rd == -1 && errno == EINTR) {
             continue;
         } else if (rd == -1 && (errno == EAGAIN || errno == EWOULDBLOCK) ) {
             if (readcb_ && input_.size()) {
+                CHEN_LOG(DEBUG,"read zero---");
                 readcb_(con);
             }
             break;
         } else if (channel_->fd() == -1 || rd == 0 || rd == -1) {
-            cleanup(con);
+            CHEN_LOG(DEBUG,"cleaning conn");
+            cleanup(con);       //说明此时连接已断开
             break;
         } else { //rd > 0
             input_.addSize(rd);
@@ -155,6 +157,7 @@ int TcpConn::handleHandshake(const TcpConnPtr& con) {
             CHEN_LOG(DEBUG,"tcp connected %s - %s fd %d",
                 local_.toString().c_str(), peer_.toString().c_str(), channel_->fd());
             if (statecb_) {
+                CHEN_LOG(DEBUG,"call statecb---------------------");
                 statecb_(con);
             }
         }
@@ -268,12 +271,52 @@ void TcpConn::send(const char* buf, size_t len) {
 //     sendOutput();
 // }
 
-TcpServer::TcpServer(EventBases* bases):
+TcpServer::TcpServer(EventBases* bases,int idleSeconds):
 base_(bases->allocBase()),
 bases_(bases),
 listen_channel_(NULL),
-createcb_([]{ return TcpConnPtr(new TcpConn); })
+createcb_([]{ return TcpConnPtr(new TcpConn); }),
+idleSeconds(idleSeconds),
+connectionBuckets_(idleSeconds)
 {
+    if(idleSeconds)
+        {
+        base_->runAfter(1000000,[this]{        //每一秒使时间轮转一格
+            connectionBuckets_.push_back(Bucket());
+            cur++;
+            if(cur >= this->idleSeconds)
+                cur -= this->idleSeconds;
+            cout <<cur<<"cur------------"<<endl;
+        },1);
+    }
+    //注册相关回调事件
+    statecb_ = [this](const TcpConnPtr& con){
+        if(this->idleSeconds)
+        {
+            if(con->getState() ==  con->Connected)
+            {
+                EntryPtr entry(new Entry(con));
+                connectionBuckets_.back().insert(entry);
+                WeakEntryPtr weakEntry(entry);
+                con->setContext(weakEntry);
+                CHEN_LOG(INFO,"setContext---------");
+            }
+        }
+    };      
+    readcb_ = [this](const TcpConnPtr& con){
+        if(this->idleSeconds)
+        {
+            CHEN_LOG(DEBUG,"update timewheeling");
+            assert(!con->getContext().empty());
+            WeakEntryPtr weakEntryPtr(boost::any_cast<WeakEntryPtr>(con->getContext()));
+            EntryPtr entry(weakEntryPtr.lock());
+            if (entry)
+            {
+                this->connectionBuckets_.back().insert(entry);
+            }
+        }
+        con->send(con->getInput());
+    };    
 }
 //绑定并监听端口
 int TcpServer::bind(const std::string &host, short port, bool reusePort) {
@@ -303,8 +346,9 @@ int TcpServer::bind(const std::string &host, short port, bool reusePort) {
     return 0;
 }
 
-TcpServerPtr TcpServer::startServer(EventBases* bases, const std::string& host, short port, bool reusePort) {
-    TcpServerPtr p(new TcpServer(bases));
+TcpServerPtr TcpServer::startServer(EventBases* bases, const std::string& host, 
+                                    short port,int idleSeconds, bool reusePort) {
+    TcpServerPtr p(new TcpServer(bases,idleSeconds));
     int r = p->bind(host, port, reusePort);
     if (r) {
         CHEN_LOG(ERROR,"bind to %s:%d failed ", host.c_str(), port);
@@ -338,6 +382,7 @@ void TcpServer::handleAccept() {
             TcpConnPtr con = createcb_();
             con->attach(b, cfd, local, peer);
             if (statecb_) {
+                CHEN_LOG(DEBUG,"register statecb-----");
                 con->onState(statecb_);
             }
             if (readcb_) {
@@ -358,20 +403,23 @@ void TcpServer::handleAccept() {
     }
 }
 
-// HSHAPtr HSHA::startServer(EventBase* base, const std::string& host, short port, int threads) {
-//     HSHAPtr p = HSHAPtr(new HSHA(threads));
-//     p->server_ = TcpServer::startServer(base, host, port);
-//     return p->server_ ? p : NULL;
-// }
-
-// void HSHA::onMsg(CodecBase* codec, const RetMsgCallBack& cb) {
-//     server_->onConnMsg(codec, [this, cb](const TcpConnPtr& con, Slice msg) {
-//         std::string input = msg;
-//         threadPool_.addTask([=]{
-//             std::string output = cb(con, input);
-//             server_->getBase()->safeCall([=] {if (output.size()) con->sendMsg(output); });
-//         });
-//     });
-// }
+void TcpServer::onConnCreate(const std::function<TcpConnPtr()>& cb){ createcb_ = cb; }
+void TcpServer::onConnState(const TcpCallBack& cb) 
+{ 
+    auto readcb = [this,cb](const TcpConnPtr& con){
+        statecb_(con);
+        cb(con);
+    };      
+    statecb_ = readcb; 
+}
+void TcpServer::onConnRead(const TcpCallBack& cb) 
+{//有消息到来，在执行用户注册的回调前先更新时间轮状态
+    auto readcb = [this,cb](const TcpConnPtr& con){
+        readcb_(con);
+        cb(con);
+    };  
+    readcb_ = readcb; 
+    assert(!msgcb_); 
+}
 
 }
