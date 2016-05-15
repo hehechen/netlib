@@ -99,4 +99,5 @@ protected:
 
 
 #include "TimerHeap.h"
-#include "conn.h"
+#include "TcpConn.h"
+#include "TcpServer.h"

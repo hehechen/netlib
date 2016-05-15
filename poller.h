@@ -10,7 +10,6 @@
 #include "event_base.h"
 namespace netlib {
 
-struct Channel;
 
 const int kMaxEvents = 2000;
 
